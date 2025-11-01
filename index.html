@@ -339,6 +339,9 @@
                         <span class="minute-separator">-</span>
                         <input type="number" id="max-minutes" class="minute-input" value="5" min="1" max="999">
                     </div>
+                    <div style="text-align: center; font-size: 18px; color: #666; margin-bottom: 15px; font-weight: 500;">
+                        Minutes (Min - Max)
+                    </div>
                     <div class="device-selector">
                         <select id="timer-device-select">
                             <option value="">Select a device</option>
@@ -346,23 +349,23 @@
                     </div>
                     <button class="start-btn" onclick="startTimer()">Start</button>
                 </div>
-                <div id="timer-running" style="display: none;">
-                    <div style="font-size: 18px; color: #666; margin-bottom: 10px;">
-                        Selected Time: <span id="selected-time"></span> minutes
+                <div id="timer-success" style="display: none; margin-top: 30px; padding: 20px; background-color: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50;">
+                    <div style="font-size: 20px; font-weight: bold; color: #2e7d32; margin-bottom: 15px;">Timer Set Successfully!</div>
+                    <div style="font-size: 16px; color: #333; line-height: 1.8;">
+                        <div><strong>Device:</strong> <span id="success-device-name"></span></div>
+                        <div><strong>Duration:</strong> <span id="success-duration"></span> minutes</div>
+                        <div><strong>Unlock Time:</strong> <span id="success-unlock-time"></span></div>
                     </div>
-                    <div class="timer-display" id="countdown-display">5:00</div>
-                    <div style="font-size: 18px; color: #666; margin-bottom: 20px;">
-                        Device: <span id="timer-device-name"></span>
-                    </div>
-                    <button class="cancel-btn" onclick="cancelTimer()">Cancel</button>
+                </div>
+                <div id="timer-error" style="display: none; margin-top: 30px; padding: 20px; background-color: #ffebee; border-radius: 8px; border: 2px solid #f44336;">
+                    <div style="font-size: 20px; font-weight: bold; color: #c62828; margin-bottom: 10px;">Error</div>
+                    <div id="error-message" style="font-size: 16px; color: #333;"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        let timerInterval = null;
-        let timerDeviceId = null;
         let devicesData = [];
 
         function login() {
@@ -392,6 +395,7 @@
 
             devicesData.forEach(thing => {
                 const device = thing.itemData;
+                // Show all online devices
                 if (device.online) {
                     const option = document.createElement('option');
                     option.value = device.deviceid;
@@ -401,14 +405,21 @@
             });
         }
 
-        function startTimer() {
-            const select = document.getElementById('timer-device-select');
-            timerDeviceId = select.value;
+        async function startTimer() {
+            // Hide any previous messages
+            document.getElementById('timer-success').style.display = 'none';
+            document.getElementById('timer-error').style.display = 'none';
 
-            if (!timerDeviceId) {
-                alert('Please select a device');
+            const deviceSelect = document.getElementById('timer-device-select');
+            const deviceId = deviceSelect.value;
+
+            if (!deviceId) {
+                showError('Please select a device');
                 return;
             }
+
+            const device = devicesData.find(thing => thing.itemData.deviceid === deviceId)?.itemData;
+            const deviceName = deviceSelect.options[deviceSelect.selectedIndex].text;
 
             // Get min and max values
             const minMinutes = parseInt(document.getElementById('min-minutes').value) || 1;
@@ -416,76 +427,63 @@
 
             // Validate inputs
             if (minMinutes < 1 || maxMinutes < 1) {
-                alert('Minutes must be at least 1');
+                showError('Minutes must be at least 1');
                 return;
             }
 
             if (minMinutes > maxMinutes) {
-                alert('Minimum cannot be greater than maximum');
+                showError('Minimum cannot be greater than maximum');
                 return;
             }
 
             // Calculate random time in range
             const selectedMinutes = Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes;
-            const deviceName = select.options[select.selectedIndex].text;
 
-            // Hide setup, show running
-            document.getElementById('timer-setup').style.display = 'none';
-            document.getElementById('timer-running').style.display = 'block';
-            document.getElementById('timer-device-name').textContent = deviceName;
-            document.getElementById('selected-time').textContent = selectedMinutes;
-
-            // Start countdown
-            let totalSeconds = selectedMinutes * 60;
-            updateCountdownDisplay(totalSeconds);
-
-            timerInterval = setInterval(() => {
-                totalSeconds--;
-                updateCountdownDisplay(totalSeconds);
-
-                if (totalSeconds <= 0) {
-                    clearInterval(timerInterval);
-                    turnOffDevice();
-                }
-            }, 1000);
-        }
-
-        function updateCountdownDisplay(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = seconds % 60;
-            document.getElementById('countdown-display').textContent =
-                `${mins}:${secs.toString().padStart(2, '0')}`;
-        }
-
-        function cancelTimer() {
-            if (timerInterval) {
-                clearInterval(timerInterval);
-                timerInterval = null;
-            }
-            document.getElementById('timer-setup').style.display = 'block';
-            document.getElementById('timer-running').style.display = 'none';
-        }
-
-        async function turnOffDevice() {
             try {
-                await fetch('/control', {
+                // Set timer on device - always use outlet 0 for multi-channel devices
+                const requestBody = {
+                    deviceId: deviceId,
+                    minutes: selectedMinutes
+                };
+
+                // Check if multi-channel device
+                if (device && device.params && device.params.switches) {
+                    requestBody.outlet = 0;  // Always use outlet 0
+                }
+
+                const response = await fetch('/set-timer', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        deviceId: timerDeviceId,
-                        switch: 'off'
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
-                alert('Timer finished! Device turned off.');
-            } catch (error) {
-                console.error('Error turning off device:', error);
-                alert('Timer finished but failed to turn off device.');
-            }
+                const data = await response.json();
 
-            cancelTimer();
+                if (data.error === 0) {
+                    const scheduledTime = new Date(Date.now() + selectedMinutes * 60000);
+                    const timeString = scheduledTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    showSuccess(deviceName, selectedMinutes, timeString);
+                } else {
+                    showError('Failed to set timer: ' + (data.msg || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error setting timer:', error);
+                showError('Failed to set timer. Please try again.');
+            }
+        }
+
+        function showSuccess(deviceName, duration, unlockTime) {
+            document.getElementById('success-device-name').textContent = deviceName;
+            document.getElementById('success-duration').textContent = duration;
+            document.getElementById('success-unlock-time').textContent = unlockTime;
+            document.getElementById('timer-success').style.display = 'block';
+        }
+
+        function showError(message) {
+            document.getElementById('error-message').textContent = message;
+            document.getElementById('timer-error').style.display = 'block';
         }
 
         function updateAuthStatus(isAuthenticated) {

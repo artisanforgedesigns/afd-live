@@ -4,6 +4,7 @@ import bodyParser from 'koa-bodyparser'
 import Router from 'koa-router'
 import eWeLink from 'ewelink-api-next'
 import * as fs from 'fs'
+import * as crypto from 'crypto'
 import open from 'open'
 
 // Load configuration from environment
@@ -39,7 +40,7 @@ const router = new Router()
 // Serve static HTML file
 router.get('/', async (ctx) => {
   ctx.type = 'html'
-  ctx.body = fs.readFileSync('./pages/index.html')
+  ctx.body = fs.readFileSync('./index.html')
 })
 
 router.get('/login', async (ctx) => {
@@ -100,6 +101,88 @@ router.post('/control', async (ctx) => {
       }
     })
 
+    ctx.body = result
+  } catch (e) {
+    console.error(e)
+    ctx.body = { error: 1, msg: e.message }
+  }
+})
+
+// Set timer endpoint
+router.post('/set-timer', async (ctx) => {
+  try {
+    const { deviceId, minutes, outlet } = ctx.request.body
+
+    if (!deviceId || !minutes) {
+      ctx.body = { error: 1, msg: 'Missing deviceId or minutes' }
+      return
+    }
+
+    // Check if token exists
+    if (!fs.existsSync('./token.json')) {
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
+    // Get token
+    const LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+    const accessToken = LoggedInfo.data?.accessToken
+    const region = LoggedInfo?.region || 'us'
+
+    client.at = accessToken
+    client.region = region
+    client.setUrl(region)
+
+    // Generate timer ID
+    const timerId = crypto.randomUUID()
+
+    // Calculate UTC execution time
+    const atTime = new Date(Date.now() + minutes * 60000).toISOString()
+
+    // Prepare timer action based on device type
+    let timerAction
+    if (outlet !== undefined && outlet !== null) {
+      // Multi-channel device
+      timerAction = {
+        switches: [{
+          switch: 'off',
+          outlet: outlet
+        }]
+      }
+    } else {
+      // Single-channel device
+      timerAction = { switch: 'off' }
+    }
+
+    // Prepare timer object
+    const timer = {
+      mId: timerId,
+      type: 'once',
+      coolkit_timer_type: 'delay',
+      at: atTime,
+      enabled: 1,
+      do: timerAction,
+      period: minutes.toString()
+    }
+
+    // Make direct API call to /v2/device/thing/status
+    const apiUrl = `https://${region}-apia.coolkit.cc/v2/device/thing/status`
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        type: 1,
+        id: deviceId,
+        params: {
+          timers: [timer]
+        }
+      })
+    })
+
+    const result = await response.json()
     ctx.body = result
   } catch (e) {
     console.error(e)
