@@ -2,6 +2,7 @@ import 'dotenv/config'
 import Koa from 'koa'
 import bodyParser from 'koa-bodyparser'
 import Router from 'koa-router'
+import session from 'koa-session'
 import eWeLink from 'ewelink-api-next'
 import * as fs from 'fs'
 import * as crypto from 'crypto'
@@ -12,7 +13,8 @@ const PORT = process.env.PORT || 4001
 const APP_ID = process.env.APP_ID
 const APP_SECRET = process.env.APP_SECRET
 const REGION = process.env.REGION || 'us'
-const REDIRECT_URL = `http://127.0.0.1:${PORT}/redirectUrl`
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production'
+const REDIRECT_URL = process.env.REDIRECT_URL || `http://127.0.0.1:${PORT}/redirectUrl`
 
 if (!APP_ID || !APP_SECRET) {
   throw new Error('Please configure APP_ID and APP_SECRET in .env file')
@@ -31,7 +33,41 @@ const randomString = (length) => {
   return [...Array(length)].map(_=>(Math.random()*36|0).toString(36)).join('')
 }
 
+// Multi-user token storage helpers
+const TOKENS_FILE = './tokens.json'
+
+const getAllTokens = () => {
+  if (!fs.existsSync(TOKENS_FILE)) {
+    return {}
+  }
+  return JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf-8'))
+}
+
+const getTokenForUser = (userId) => {
+  const tokens = getAllTokens()
+  return tokens[userId] || null
+}
+
+const saveTokenForUser = (userId, tokenData) => {
+  const tokens = getAllTokens()
+  tokens[userId] = tokenData
+  fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2))
+}
+
 const app = new Koa()
+
+// Session configuration
+app.keys = [SESSION_SECRET]
+app.use(session({
+  key: 'afd:sess',
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  autoCommit: true,
+  overwrite: true,
+  httpOnly: true,
+  signed: true,
+  rolling: false,
+  renew: false,
+}, app))
 
 app.use(bodyParser())
 
@@ -63,9 +99,18 @@ router.get('/redirectUrl', async (ctx) => {
     code,
   })
   res['region'] = region
-  // Save token
-  fs.writeFileSync('./token.json', JSON.stringify(res))
-  console.log(res)
+
+  // Generate unique user ID for this session
+  const userId = crypto.randomUUID()
+
+  // Save token for this user
+  saveTokenForUser(userId, res)
+
+  // Store user ID in session
+  ctx.session.userId = userId
+
+  console.log(`User ${userId} authenticated`)
+
   // Redirect to home page after successful authentication
   ctx.redirect('/')
 })
@@ -80,14 +125,21 @@ router.post('/control', async (ctx) => {
       return
     }
 
-    // Check if token exists
-    if (!fs.existsSync('./token.json')) {
+    // Check if user is authenticated
+    if (!ctx.session.userId) {
+      ctx.status = 401
       ctx.body = { error: 1, msg: 'Not authenticated' }
       return
     }
 
-    // Get token
-    const LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+    // Get user's token
+    const LoggedInfo = getTokenForUser(ctx.session.userId)
+    if (!LoggedInfo) {
+      ctx.status = 401
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
     client.at = LoggedInfo.data?.accessToken
     client.region = LoggedInfo?.region || 'us'
     client.setUrl(LoggedInfo?.region || 'us')
@@ -118,14 +170,21 @@ router.post('/set-timer', async (ctx) => {
       return
     }
 
-    // Check if token exists
-    if (!fs.existsSync('./token.json')) {
+    // Check if user is authenticated
+    if (!ctx.session.userId) {
+      ctx.status = 401
       ctx.body = { error: 1, msg: 'Not authenticated' }
       return
     }
 
-    // Get token
-    const LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+    // Get user's token
+    const LoggedInfo = getTokenForUser(ctx.session.userId)
+    if (!LoggedInfo) {
+      ctx.status = 401
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
     const accessToken = LoggedInfo.data?.accessToken
     const region = LoggedInfo?.region || 'us'
 
@@ -193,14 +252,21 @@ router.post('/set-timer', async (ctx) => {
 // Get devices endpoint
 router.get('/devices', async (ctx) => {
   try {
-    // Check if token exists
-    if (!fs.existsSync('./token.json')) {
+    // Check if user is authenticated
+    if (!ctx.session.userId) {
+      ctx.status = 401
       ctx.body = { error: 1, msg: 'Not authenticated' }
       return
     }
 
-    // Get token
-    let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+    // Get user's token
+    let LoggedInfo = getTokenForUser(ctx.session.userId)
+    if (!LoggedInfo) {
+      ctx.status = 401
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
     client.at = LoggedInfo.data?.accessToken
     client.region = LoggedInfo?.region || 'us'
     client.setUrl(LoggedInfo?.region || 'us')
@@ -210,32 +276,31 @@ router.get('/devices', async (ctx) => {
       LoggedInfo.data?.atExpiredTime < Date.now() &&
       LoggedInfo.data?.rtExpiredTime > Date.now()
     ) {
-      console.log('Token expired, refreshing token')
+      console.log(`Refreshing token for user ${ctx.session.userId}`)
       const refreshStatus = await client.user.refreshToken({
         rt: LoggedInfo.data?.refreshToken,
       })
       if (refreshStatus.error === 0) {
-        fs.writeFileSync(
-          './token.json',
-          JSON.stringify({
-            status: 200,
-            responseTime: 0,
-            error: 0,
-            msg: '',
-            data: {
-              accessToken: refreshStatus?.data?.at,
-              atExpiredTime: Date.now() + 2592000000,
-              refreshToken: refreshStatus?.data?.rt,
-              rtExpiredTime: Date.now() + 5184000000,
-            },
-            region: client.region,
-          })
-        )
-        LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+        const refreshedToken = {
+          status: 200,
+          responseTime: 0,
+          error: 0,
+          msg: '',
+          data: {
+            accessToken: refreshStatus?.data?.at,
+            atExpiredTime: Date.now() + 2592000000,
+            refreshToken: refreshStatus?.data?.rt,
+            rtExpiredTime: Date.now() + 5184000000,
+          },
+          region: client.region,
+        }
+        saveTokenForUser(ctx.session.userId, refreshedToken)
+        LoggedInfo = refreshedToken
       }
     }
 
     if (LoggedInfo.data?.rtExpiredTime < Date.now()) {
+      ctx.status = 401
       ctx.body = { error: 1, msg: 'Token expired, please login again' }
       return
     }

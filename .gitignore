@@ -130,6 +130,7 @@ dist
 .pnp.*
 
 token.json
+tokens.json
 .DS_Store
 .idea
 
