@@ -312,10 +312,9 @@
     <header>
         <div class="header-content">
             <div class="header-left">
-                <a href="#" class="app-name" onclick="navigateTo('devices'); return false;">AFD Live</a>
+                <a href="#" class="app-name" onclick="navigateTo('timer'); return false;">AFD Live</a>
                 <nav>
-                    <a href="#" id="nav-devices" class="active" onclick="navigateTo('devices'); return false;">Devices</a>
-                    <a href="#" id="nav-timer" onclick="navigateTo('timer'); return false;">Timer</a>
+                    <a href="#" id="nav-timer" class="active" onclick="navigateTo('timer'); return false;">Timer</a>
                 </nav>
             </div>
             <div id="auth-status-content"></div>
@@ -324,14 +323,13 @@
 
     <div class="container">
         <!-- Devices Page -->
-        <div id="devices-page" class="page active">
+        <div id="devices-page" class="page" style="display: none;">
             <h1>Your Devices</h1>
             <div id="device-list" class="device-list"></div>
         </div>
 
         <!-- Timer Page -->
-        <div id="timer-page" class="page">
-            <h1>Timer</h1>
+        <div id="timer-page" class="page active">
             <div class="timer-container">
                 <div id="timer-setup">
                     <div class="minute-selector">
@@ -395,13 +393,18 @@
 
             devicesData.forEach(thing => {
                 const device = thing.itemData;
-                // Show all online devices
+                const option = document.createElement('option');
+                option.value = device.deviceid;
+
+                // Show device name with status indicator
                 if (device.online) {
-                    const option = document.createElement('option');
-                    option.value = device.deviceid;
                     option.textContent = device.name || 'Unnamed Device';
-                    select.appendChild(option);
+                } else {
+                    option.textContent = (device.name || 'Unnamed Device') + ' (Offline)';
+                    option.disabled = true;
                 }
+
+                select.appendChild(option);
             });
         }
 
