@@ -514,6 +514,7 @@
                 if (data.error === 0 && data.devices) {
                     devicesData = data.devices;
                     displayDevices(data.devices);
+                    populateTimerDevices();  // Also populate timer dropdown
                     updateAuthStatus(true);
                 } else {
                     // Not authenticated, show empty list
