@@ -347,12 +347,15 @@
                     </div>
                     <button class="start-btn" onclick="startTimer()">Start</button>
                 </div>
-                <div id="timer-success" style="display: none; margin-top: 30px; padding: 20px; background-color: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50;">
+                <div id="timer-success" style="display: none; margin-top: 30px; padding: 20px; background-color: #e8f5e9; border-radius: 8px; border: 2px solid #4CAF50; cursor: pointer;" onclick="revealTimerDuration()">
                     <div style="font-size: 20px; font-weight: bold; color: #2e7d32; margin-bottom: 15px;">Timer Set Successfully!</div>
                     <div style="font-size: 16px; color: #333; line-height: 1.8;">
                         <div><strong>Device:</strong> <span id="success-device-name"></span></div>
-                        <div><strong>Duration:</strong> <span id="success-duration"></span> minutes</div>
-                        <div><strong>Unlock Time:</strong> <span id="success-unlock-time"></span></div>
+                        <div id="duration-hidden" style="font-style: italic; color: #666;">Duration will be revealed in <span id="reveal-countdown">60</span> seconds (click to reveal now)</div>
+                        <div id="duration-revealed" style="display: none;">
+                            <div><strong>Duration:</strong> <span id="success-duration"></span> minutes</div>
+                            <div><strong>Unlock Time:</strong> <span id="success-unlock-time"></span></div>
+                        </div>
                     </div>
                 </div>
                 <div id="timer-error" style="display: none; margin-top: 30px; padding: 20px; background-color: #ffebee; border-radius: 8px; border: 2px solid #f44336;">
@@ -365,6 +368,8 @@
 
     <script>
         let devicesData = [];
+        let revealTimer = null;
+        let countdownInterval = null;
 
         function login() {
             window.location.href = '/login';
@@ -442,6 +447,12 @@
             // Calculate random time in range
             const selectedMinutes = Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes;
 
+            // Disable start button and show loading state
+            const startBtn = document.querySelector('.start-btn');
+            const originalBtnText = startBtn.textContent;
+            startBtn.disabled = true;
+            startBtn.textContent = 'Setting Timer...';
+
             try {
                 // Set timer on device - always use outlet 0 for multi-channel devices
                 const requestBody = {
@@ -465,23 +476,93 @@
                 const data = await response.json();
 
                 if (data.error === 0) {
-                    const scheduledTime = new Date(Date.now() + selectedMinutes * 60000);
-                    const timeString = scheduledTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    showSuccess(deviceName, selectedMinutes, timeString);
+                    // Update button text to show verification in progress
+                    startBtn.textContent = 'Verifying Timer...';
+
+                    // Verify the timer was actually set on the device
+                    const verifyResponse = await fetch('/verify-timer', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            deviceId: deviceId,
+                            timerId: data.timerId
+                        })
+                    });
+
+                    const verifyData = await verifyResponse.json();
+
+                    if (verifyData.error === 0 && verifyData.verified) {
+                        const scheduledTime = new Date(Date.now() + selectedMinutes * 60000);
+                        const timeString = scheduledTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        showSuccess(deviceName, selectedMinutes, timeString);
+                    } else {
+                        showError('Timer was not confirmed on device. Please try again. The timer may not have been set correctly.');
+                        console.error('Verification failed:', verifyData);
+                    }
                 } else {
                     showError('Failed to set timer: ' + (data.msg || 'Unknown error'));
                 }
             } catch (error) {
                 console.error('Error setting timer:', error);
                 showError('Failed to set timer. Please try again.');
+            } finally {
+                // Re-enable button
+                startBtn.disabled = false;
+                startBtn.textContent = originalBtnText;
             }
         }
 
+        function revealTimerDuration() {
+            // Clear any existing timers
+            if (revealTimer) clearTimeout(revealTimer);
+            if (countdownInterval) clearInterval(countdownInterval);
+
+            // Show the duration
+            document.getElementById('duration-hidden').style.display = 'none';
+            document.getElementById('duration-revealed').style.display = 'block';
+
+            // Remove click handler
+            document.getElementById('timer-success').onclick = null;
+            document.getElementById('timer-success').style.cursor = 'default';
+        }
+
         function showSuccess(deviceName, duration, unlockTime) {
+            // Clear any existing timers
+            if (revealTimer) clearTimeout(revealTimer);
+            if (countdownInterval) clearInterval(countdownInterval);
+
+            // Set the values
             document.getElementById('success-device-name').textContent = deviceName;
             document.getElementById('success-duration').textContent = duration;
             document.getElementById('success-unlock-time').textContent = unlockTime;
+
+            // Reset UI to hidden state
+            document.getElementById('duration-hidden').style.display = 'block';
+            document.getElementById('duration-revealed').style.display = 'none';
+            document.getElementById('reveal-countdown').textContent = '60';
+            document.getElementById('timer-success').style.cursor = 'pointer';
+            document.getElementById('timer-success').onclick = revealTimerDuration;
+
+            // Show the success message
             document.getElementById('timer-success').style.display = 'block';
+
+            // Start countdown
+            let secondsLeft = 60;
+            countdownInterval = setInterval(() => {
+                secondsLeft--;
+                document.getElementById('reveal-countdown').textContent = secondsLeft;
+
+                if (secondsLeft <= 0) {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+
+            // Auto-reveal after 60 seconds
+            revealTimer = setTimeout(() => {
+                revealTimerDuration();
+            }, 60000);
         }
 
         function showError(message) {

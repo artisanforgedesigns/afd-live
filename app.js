@@ -242,7 +242,72 @@ router.post('/set-timer', async (ctx) => {
     })
 
     const result = await response.json()
+
+    // Include the timer ID in the response for verification
+    if (result.error === 0) {
+      result.timerId = timerId
+    }
+
     ctx.body = result
+  } catch (e) {
+    console.error(e)
+    ctx.body = { error: 1, msg: e.message }
+  }
+})
+
+// Verify timer endpoint
+router.post('/verify-timer', async (ctx) => {
+  try {
+    const { deviceId, timerId } = ctx.request.body
+
+    if (!deviceId || !timerId) {
+      ctx.body = { error: 1, msg: 'Missing deviceId or timerId' }
+      return
+    }
+
+    // Check if user is authenticated
+    if (!ctx.session.userId) {
+      ctx.status = 401
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
+    // Get user's token
+    const LoggedInfo = getTokenForUser(ctx.session.userId)
+    if (!LoggedInfo) {
+      ctx.status = 401
+      ctx.body = { error: 1, msg: 'Not authenticated' }
+      return
+    }
+
+    const accessToken = LoggedInfo.data?.accessToken
+    const region = LoggedInfo?.region || 'us'
+
+    client.at = accessToken
+    client.region = region
+    client.setUrl(region)
+
+    // Get device status to verify timer
+    const status = await client.device.getThingStatus({
+      type: 1,
+      id: deviceId,
+      params: ['timers']
+    })
+
+    if (status.error === 0) {
+      // Check if the timer exists in the device's timer list
+      const timers = status.data?.params?.timers || []
+      const timerExists = timers.some(timer => timer.mId === timerId && timer.enabled === 1)
+
+      ctx.body = {
+        error: 0,
+        verified: timerExists,
+        timers: timers,
+        msg: timerExists ? 'Timer verified successfully' : 'Timer not found on device'
+      }
+    } else {
+      ctx.body = { error: 1, msg: 'Failed to verify timer', details: status }
+    }
   } catch (e) {
     console.error(e)
     ctx.body = { error: 1, msg: e.message }
