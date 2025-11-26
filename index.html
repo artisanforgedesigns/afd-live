@@ -575,7 +575,7 @@
         startBtn.textContent = "Setting Timer...";
 
         try {
-          // Set timer on device - always use outlet 0 for multi-channel devices
+          // Set timer on device
           const requestBody = {
             deviceId: deviceId,
             minutes: selectedMinutes,
@@ -583,7 +583,7 @@
 
           // Check if multi-channel device
           if (device && device.params && device.params.switches) {
-            requestBody.outlet = 0; // Always use outlet 0
+            requestBody.channelCount = device.params.switches.length;
           }
 
           const response = await fetch("/set-timer", {

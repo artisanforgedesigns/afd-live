@@ -163,7 +163,7 @@ router.post('/control', async (ctx) => {
 // Set timer endpoint
 router.post('/set-timer', async (ctx) => {
   try {
-    const { deviceId, minutes, outlet } = ctx.request.body
+    const { deviceId, minutes, channelCount } = ctx.request.body
 
     if (!deviceId || !minutes) {
       ctx.body = { error: 1, msg: 'Missing deviceId or minutes' }
@@ -200,13 +200,13 @@ router.post('/set-timer', async (ctx) => {
 
     // Prepare timer action based on device type
     let timerAction
-    if (outlet !== undefined && outlet !== null) {
-      // Multi-channel device
+    if (channelCount !== undefined && channelCount !== null && channelCount > 1) {
+      // Multi-channel device - turn off all channels
       timerAction = {
-        switches: [{
+        switches: Array.from({ length: channelCount }, (_, i) => ({
           switch: 'off',
-          outlet: outlet
-        }]
+          outlet: i
+        }))
       }
     } else {
       // Single-channel device
