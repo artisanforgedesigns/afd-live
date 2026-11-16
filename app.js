@@ -92,13 +92,20 @@ router.get('/login', async (ctx) => {
 
 router.get('/redirectUrl', async (ctx) => {
   const { code, region } = ctx.request.query
-  console.log(code, region)
   const res = await client.oauth.getToken({
     region,
     redirectUrl: REDIRECT_URL,
     code,
   })
   res['region'] = region
+
+  if (res.error !== 0 || !res.data?.accessToken) {
+    ctx.session = null
+    ctx.status = 401
+    ctx.type = 'text/plain'
+    ctx.body = `eWeLink login failed: ${res.msg || 'No access token returned'}. Please check your eWeLink developer app credentials and try again.`
+    return
+  }
 
   // Generate unique user ID for this session
   const userId = crypto.randomUUID()
@@ -116,11 +123,16 @@ router.get('/redirectUrl', async (ctx) => {
 })
 
 // Control device endpoint
+router.post('/logout', (ctx) => {
+  ctx.session = null
+  ctx.body = { error: 0 }
+})
+
 router.post('/control', async (ctx) => {
   try {
-    const { deviceId, switch: switchState } = ctx.request.body
+    const { deviceId, switch: switchState, channelCount } = ctx.request.body
 
-    if (!deviceId || !switchState) {
+    if (!deviceId || !['on', 'off'].includes(switchState)) {
       ctx.body = { error: 1, msg: 'Missing deviceId or switch state' }
       return
     }
@@ -134,9 +146,9 @@ router.post('/control', async (ctx) => {
 
     // Get user's token
     const LoggedInfo = getTokenForUser(ctx.session.userId)
-    if (!LoggedInfo) {
+    if (!LoggedInfo || LoggedInfo.error !== 0 || !LoggedInfo.data?.accessToken) {
       ctx.status = 401
-      ctx.body = { error: 1, msg: 'Not authenticated' }
+      ctx.body = { error: 1, msg: LoggedInfo?.msg || 'Not authenticated' }
       return
     }
 
@@ -148,9 +160,9 @@ router.post('/control', async (ctx) => {
     const result = await client.device.setThingStatus({
       type: 1,
       id: deviceId,
-      params: {
-        switch: switchState
-      }
+      params: channelCount > 0
+        ? { switches: [{ outlet: 0, switch: switchState }] }
+        : { switch: switchState }
     })
 
     ctx.body = result
@@ -326,9 +338,9 @@ router.get('/devices', async (ctx) => {
 
     // Get user's token
     let LoggedInfo = getTokenForUser(ctx.session.userId)
-    if (!LoggedInfo) {
+    if (!LoggedInfo || LoggedInfo.error !== 0 || !LoggedInfo.data?.accessToken) {
       ctx.status = 401
-      ctx.body = { error: 1, msg: 'Not authenticated' }
+      ctx.body = { error: 1, msg: LoggedInfo?.msg || 'Not authenticated' }
       return
     }
 
@@ -371,7 +383,27 @@ router.get('/devices', async (ctx) => {
     }
 
     // Get device list
-    const thingList = await client.device.getAllThingsAllPages({})
+    // Fetch pages directly: the SDK's all-pages helper hides API errors.
+    const devices = []
+    let beginIndex = -9999999
+    while (true) {
+      const page = await client.device.getAllThings({ num: 30, beginIndex })
+      if (page.error !== 0) {
+        ctx.status = 502
+        ctx.body = { error: page.error || 1, msg: page.msg || 'Failed to fetch devices' }
+        return
+      }
+      const items = page.data?.thingList
+      if (!Array.isArray(items)) throw new Error('Invalid device list response')
+      devices.push(...items)
+      if (!items.length || devices.length >= page.data.total) break
+      const nextIndex = items.at(-1).index
+      if (typeof nextIndex !== 'number' || nextIndex <= beginIndex) {
+        throw new Error('Device pagination did not advance')
+      }
+      beginIndex = nextIndex
+    }
+    const thingList = { error: 0, data: { thingList: devices } }
 
     if (thingList?.error === 0) {
       ctx.body = { error: 0, devices: thingList.data.thingList }

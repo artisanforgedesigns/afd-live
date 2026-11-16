@@ -241,6 +241,8 @@
       .login-btn-small:hover {
         background-color: #45a049;
       }
+      .logout-btn { background-color: #eee; color: #444; border: 1px solid #ccc; }
+      .logout-btn:hover { background-color: #e0e0e0; }
       .timer-container {
         max-width: 500px;
         margin: 0 auto;
@@ -330,6 +332,10 @@
       .cancel-btn:hover {
         background-color: #da190b;
       }
+      .manual-controls { display: flex; justify-content: center; gap: 12px; margin-top: 12px; }
+      .manual-btn { min-width: 100px; padding: 10px 24px; font-size: 16px; font-weight: 500; border: 1px solid #ccc; border-radius: 6px; background: #eee; color: #444; cursor: pointer; }
+      .manual-btn:hover:not(:disabled) { background: #e0e0e0; }
+      .manual-btn:disabled { background: #f2f2f2; color: #aaa; border-color: #e0e0e0; cursor: not-allowed; }
     </style>
   </head>
   <body>
@@ -381,7 +387,7 @@
                 type="number"
                 id="max-minutes"
                 class="minute-input"
-                value="5"
+                value="15"
                 min="1"
                 max="999"
               />
@@ -401,8 +407,13 @@
               <select id="timer-device-select">
                 <option value="">Select a device</option>
               </select>
+              <p id="device-load-error" role="alert" style="display: none; color: #b71c1c"></p>
             </div>
             <button class="start-btn" onclick="startTimer()">Start</button>
+            <div class="manual-controls">
+              <button class="manual-btn" disabled onclick="manualControl(true)">On</button>
+              <button class="manual-btn" disabled onclick="manualControl(false)">Off</button>
+            </div>
           </div>
           <div
             id="timer-success"
@@ -433,11 +444,11 @@
               </div>
               <div id="duration-hidden" style="font-style: italic; color: #666">
                 Duration will be revealed in
-                <span id="reveal-countdown">60</span> seconds (click to reveal
+                <span id="reveal-countdown">30</span> seconds (click to reveal
                 now)
               </div>
               <div id="duration-revealed" style="display: none">
-                <div>
+                <div style="font-size: clamp(32px, 6vw, 64px); font-weight: bold; line-height: 1.3; margin: 12px 0">
                   <strong>Duration:</strong>
                   <span id="success-duration"></span> minutes
                 </div>
@@ -477,6 +488,54 @@
 
     <script>
       let devicesData = [];
+      let timerUntil = Number(localStorage.getItem("afd-timer-until")) || 0;
+      let controlBusy = false;
+      let timerBusy = false;
+
+      function updateManualControls() {
+        const selected = document.getElementById("timer-device-select");
+        const disabled = timerBusy || controlBusy || Date.now() < timerUntil || !selected.value;
+        document.querySelectorAll(".manual-btn").forEach(button => button.disabled = disabled);
+      }
+
+      async function logout() {
+        try {
+          const response = await fetch("/logout", { method: "POST" });
+          if (!response.ok) throw new Error("Logout failed");
+          window.location.reload();
+        } catch (error) {
+          showError("Unable to log out. Please try again.");
+        }
+      }
+
+      async function manualControl(isOn) {
+        if (timerBusy || controlBusy || Date.now() < timerUntil) return;
+        const deviceId = document.getElementById("timer-device-select").value;
+        if (!deviceId) return;
+        controlBusy = true;
+        updateManualControls();
+        document.getElementById("timer-error").style.display = "none";
+        try {
+          const response = await fetch("/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              deviceId,
+              switch: isOn ? "on" : "off",
+              channelCount: devicesData.find(thing => thing.itemData.deviceid === deviceId)?.itemData.params?.switches?.length,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok || data.error !== 0) throw new Error(data.msg || "Device control failed");
+        } catch (error) {
+          showError(error.message || "Device control failed. Please try again.");
+        } finally {
+          controlBusy = false;
+          updateManualControls();
+        }
+      }
+      document.getElementById("timer-device-select").addEventListener("change", updateManualControls);
+      setInterval(updateManualControls, 1000);
       let revealTimer = null;
       let countdownInterval = null;
 
@@ -528,6 +587,7 @@
       }
 
       async function startTimer() {
+        if (controlBusy || timerBusy) return;
         // Hide any previous messages
         document.getElementById("timer-success").style.display = "none";
         document.getElementById("timer-error").style.display = "none";
@@ -572,6 +632,8 @@
         const startBtn = document.querySelector(".start-btn");
         const originalBtnText = startBtn.textContent;
         startBtn.disabled = true;
+        timerBusy = true;
+        updateManualControls();
         startBtn.textContent = "Setting Timer...";
 
         try {
@@ -597,6 +659,9 @@
           const data = await response.json();
 
           if (data.error === 0) {
+            timerUntil = Math.max(timerUntil, Date.now() + selectedMinutes * 60000);
+            localStorage.setItem("afd-timer-until", String(timerUntil));
+            updateManualControls();
             // Update button text to show verification in progress
             startBtn.textContent = "Verifying Timer...";
 
@@ -639,6 +704,8 @@
           // Re-enable button
           startBtn.disabled = false;
           startBtn.textContent = originalBtnText;
+          timerBusy = false;
+          updateManualControls();
         }
       }
 
@@ -669,7 +736,7 @@
         // Reset UI to hidden state
         document.getElementById("duration-hidden").style.display = "block";
         document.getElementById("duration-revealed").style.display = "none";
-        document.getElementById("reveal-countdown").textContent = "60";
+        document.getElementById("reveal-countdown").textContent = "30";
         document.getElementById("timer-success").style.cursor = "pointer";
         document.getElementById("timer-success").onclick = revealTimerDuration;
 
@@ -677,7 +744,7 @@
         document.getElementById("timer-success").style.display = "block";
 
         // Start countdown
-        let secondsLeft = 60;
+        let secondsLeft = 30;
         countdownInterval = setInterval(() => {
           secondsLeft--;
           document.getElementById("reveal-countdown").textContent = secondsLeft;
@@ -687,10 +754,10 @@
           }
         }, 1000);
 
-        // Auto-reveal after 60 seconds
+        // Auto-reveal after 30 seconds
         revealTimer = setTimeout(() => {
           revealTimerDuration();
-        }, 60000);
+        }, 30000);
       }
 
       function showError(message) {
@@ -706,6 +773,7 @@
                     <div class="status-indicator">
                         <div class="status-dot"></div>
                         <span class="status-text">Authenticated</span>
+                        <button class="login-btn-small logout-btn" onclick="logout()">Logout</button>
                     </div>
                 `;
         } else {
@@ -716,6 +784,8 @@
       }
 
       async function loadDevices() {
+        const loadError = document.getElementById("device-load-error");
+        loadError.style.display = "none";
         try {
           const response = await fetch("/devices");
           const data = await response.json();
@@ -730,12 +800,18 @@
             devicesData = [];
             document.getElementById("device-list").innerHTML = "";
             updateAuthStatus(false);
+            populateTimerDevices();
+            loadError.textContent = data.msg || "Unable to load devices. Please log in again.";
+            loadError.style.display = "block";
           }
         } catch (error) {
           console.error("Error loading devices:", error);
           devicesData = [];
           document.getElementById("device-list").innerHTML = "";
           updateAuthStatus(false);
+          populateTimerDevices();
+          loadError.textContent = "Unable to load devices. Please try again.";
+          loadError.style.display = "block";
         }
       }
 
@@ -790,6 +866,7 @@
             body: JSON.stringify({
               deviceId: deviceId,
               switch: isOn ? "on" : "off",
+              channelCount: devicesData.find(thing => thing.itemData.deviceid === deviceId)?.itemData.params?.switches?.length,
             }),
           });
 
